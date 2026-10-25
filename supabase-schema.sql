@@ -13,13 +13,6 @@ create table if not exists public.moa_workspaces (
 
 alter table public.moa_workspaces add column if not exists workspace_goal_krw numeric not null default 30000000;
 
-create table if not exists public.moa_bootstrap_admins (
-  email text primary key,
-  created_at timestamptz not null default now()
-);
-alter table public.moa_bootstrap_admins enable row level security;
-revoke all on public.moa_bootstrap_admins from anon, authenticated;
-
 create table if not exists public.moa_team_members (
   id uuid primary key default gen_random_uuid(),
   workspace_id uuid not null references public.moa_workspaces(id) on delete cascade,
@@ -58,31 +51,6 @@ returns boolean language sql stable security definer set search_path = public, a
       and m.role in ('subadmin','employee') and target_business=any(m.business_ids));
 $$;
 
-
-create or replace function public.moa_is_invited(target_email text)
-returns boolean language sql stable security definer set search_path = public, auth as $$
-  select exists(select 1 from public.moa_bootstrap_admins b where lower(b.email)=lower(trim(target_email)))
-    or exists(select 1 from public.moa_workspaces w join auth.users u on u.id=w.owner_id where lower(u.email)=lower(trim(target_email)))
-    or exists(select 1 from public.moa_team_members m where lower(m.email)=lower(trim(target_email)))
-    or exists(select 1 from public.moa_workspace_state s join auth.users u on u.id=s.user_id where lower(u.email)=lower(trim(target_email)));
-$$;
-grant execute on function public.moa_is_invited(text) to anon, authenticated;
-
-create or replace function public.moa_claim_bootstrap_admin()
-returns trigger language plpgsql security definer set search_path = public, auth as $$
-declare owner_email text;
-begin
-  select email into owner_email from auth.users where id=new.owner_id;
-  if owner_email is not null then
-    delete from public.moa_bootstrap_admins where lower(email)=lower(owner_email);
-  end if;
-  return new;
-end;
-$$;
-drop trigger if exists moa_claim_bootstrap_admin_after_insert on public.moa_workspaces;
-create trigger moa_claim_bootstrap_admin_after_insert after insert on public.moa_workspaces
-for each row execute function public.moa_claim_bootstrap_admin();
-
 alter table public.moa_workspaces enable row level security;
 alter table public.moa_team_members enable row level security;
 alter table public.moa_business_records enable row level security;
@@ -112,3 +80,44 @@ using (public.moa_can_access_business(workspace_id,business_id));
 drop policy if exists "moa business records category write" on public.moa_business_records;
 create policy "moa business records category write" on public.moa_business_records for all to authenticated
 using (public.moa_can_access_business(workspace_id,business_id)) with check (public.moa_can_access_business(workspace_id,business_id));
+
+
+-- Create a first workspace through a tightly scoped server function so a stale
+-- client-side RLS INSERT policy cannot block an approved first-time owner.
+create or replace function public.moa_create_workspace(
+  p_workspace_name text,
+  p_admin_email text,
+  p_currency text,
+  p_workspace_goal_krw numeric
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = public, auth
+set row_security = off
+as $$
+declare
+  actor_id uuid := auth.uid();
+  actor_email text := lower(trim(coalesce(auth.jwt()->>'email','')));
+  new_workspace_id uuid;
+begin
+  if actor_id is null or actor_email = '' then
+    raise exception '로그인이 필요합니다.';
+  end if;
+  if not public.moa_is_invited(actor_email) then
+    raise exception '승인된 이메일이 아닙니다.';
+  end if;
+  if exists (select 1 from public.moa_team_members m where lower(m.email)=actor_email) then
+    raise exception '이 이메일은 이미 다른 워크스페이스에 초대되어 있습니다.';
+  end if;
+  if exists (select 1 from public.moa_workspaces w where w.owner_id=actor_id) then
+    raise exception '이 계정의 워크스페이스가 이미 존재합니다.';
+  end if;
+  insert into public.moa_workspaces(owner_id, workspace_name, admin_email, currency, workspace_goal_krw)
+  values (actor_id, left(trim(coalesce(p_workspace_name,'')),40), trim(coalesce(p_admin_email,'')), p_currency, p_workspace_goal_krw)
+  returning id into new_workspace_id;
+  return new_workspace_id;
+end;
+$$;
+revoke all on function public.moa_create_workspace(text,text,text,numeric) from public, anon;
+grant execute on function public.moa_create_workspace(text,text,text,numeric) to authenticated;
