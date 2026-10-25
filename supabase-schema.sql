@@ -121,3 +121,45 @@ end;
 $$;
 revoke all on function public.moa_create_workspace(text,text,text,numeric) from public, anon;
 grant execute on function public.moa_create_workspace(text,text,text,numeric) to authenticated;
+
+
+-- Transfer the first email-based owner to the new username-backed Auth account.
+create or replace function public.moa_transfer_workspace_owner(
+  p_workspace_id uuid,
+  p_new_owner_id uuid,
+  p_new_login_email text
+)
+returns void
+language plpgsql
+security definer
+set search_path = public, auth
+set row_security = off
+as $$
+begin
+  if auth.uid() is null then raise exception '로그인이 필요합니다.'; end if;
+  if not exists(select 1 from public.moa_workspaces where id=p_workspace_id and owner_id=auth.uid()) then
+    raise exception '현재 워크스페이스 관리자만 전환할 수 있습니다.';
+  end if;
+  if lower(trim(p_new_login_email)) !~ '^[a-z0-9._-]{3,32}@moa-login[.]invalid$' then
+    raise exception '아이디 형식이 올바르지 않습니다.';
+  end if;
+  if not exists(select 1 from auth.users where id=p_new_owner_id and lower(email)=lower(trim(p_new_login_email))) then
+    raise exception '새 아이디 계정을 확인할 수 없습니다.';
+  end if;
+  update public.moa_workspaces set owner_id=p_new_owner_id,updated_at=now() where id=p_workspace_id and owner_id=auth.uid();
+end;
+$$;
+revoke all on function public.moa_transfer_workspace_owner(uuid,uuid,text) from public, anon;
+grant execute on function public.moa_transfer_workspace_owner(uuid,uuid,text) to authenticated;
+
+-- Support USDT as a display currency for workspace summaries.
+do $$
+declare c record;
+begin
+  for c in select conname from pg_constraint
+    where conrelid='public.moa_workspaces'::regclass and contype='c'
+      and pg_get_constraintdef(oid) ilike '%currency%'
+  loop execute format('alter table public.moa_workspaces drop constraint %I',c.conname); end loop;
+end $$;
+alter table public.moa_workspaces add constraint moa_workspaces_currency_check
+  check (currency in ('KRW','THB','USD','USDT'));

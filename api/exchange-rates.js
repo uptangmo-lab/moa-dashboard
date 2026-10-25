@@ -16,7 +16,7 @@ module.exports = async function handler(req, res) {
     }));
     return res.status(200).json({
       source: 'Naver Securities · Hana Bank base rate',
-      rates: { KRW: 1, USD: quotes.find((x) => x.code === 'USD').rate, THB: quotes.find((x) => x.code === 'THB').rate },
+      rates: { KRW: 1, USD: quotes.find((x) => x.code === 'USD').rate, THB: quotes.find((x) => x.code === 'THB').rate, USDT: quotes.find((x) => x.code === 'USD').rate },
       updatedAt: quotes.map((x) => x.updatedAt).filter(Boolean).sort()[0] || new Date().toISOString()
     });
   } catch (error) {
