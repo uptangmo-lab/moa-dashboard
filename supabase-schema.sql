@@ -13,6 +13,13 @@ create table if not exists public.moa_workspaces (
 
 alter table public.moa_workspaces add column if not exists workspace_goal_krw numeric not null default 30000000;
 
+create table if not exists public.moa_bootstrap_admins (
+  email text primary key,
+  created_at timestamptz not null default now()
+);
+alter table public.moa_bootstrap_admins enable row level security;
+revoke all on public.moa_bootstrap_admins from anon, authenticated;
+
 create table if not exists public.moa_team_members (
   id uuid primary key default gen_random_uuid(),
   workspace_id uuid not null references public.moa_workspaces(id) on delete cascade,
@@ -50,6 +57,31 @@ returns boolean language sql stable security definer set search_path = public, a
       and lower(m.email)=lower(coalesce(auth.jwt()->>'email',''))
       and m.role in ('subadmin','employee') and target_business=any(m.business_ids));
 $$;
+
+
+create or replace function public.moa_is_invited(target_email text)
+returns boolean language sql stable security definer set search_path = public, auth as $$
+  select exists(select 1 from public.moa_bootstrap_admins b where lower(b.email)=lower(trim(target_email)))
+    or exists(select 1 from public.moa_workspaces w join auth.users u on u.id=w.owner_id where lower(u.email)=lower(trim(target_email)))
+    or exists(select 1 from public.moa_team_members m where lower(m.email)=lower(trim(target_email)))
+    or exists(select 1 from public.moa_workspace_state s join auth.users u on u.id=s.user_id where lower(u.email)=lower(trim(target_email)));
+$$;
+grant execute on function public.moa_is_invited(text) to anon, authenticated;
+
+create or replace function public.moa_claim_bootstrap_admin()
+returns trigger language plpgsql security definer set search_path = public, auth as $$
+declare owner_email text;
+begin
+  select email into owner_email from auth.users where id=new.owner_id;
+  if owner_email is not null then
+    delete from public.moa_bootstrap_admins where lower(email)=lower(owner_email);
+  end if;
+  return new;
+end;
+$$;
+drop trigger if exists moa_claim_bootstrap_admin_after_insert on public.moa_workspaces;
+create trigger moa_claim_bootstrap_admin_after_insert after insert on public.moa_workspaces
+for each row execute function public.moa_claim_bootstrap_admin();
 
 alter table public.moa_workspaces enable row level security;
 alter table public.moa_team_members enable row level security;
