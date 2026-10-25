@@ -6,9 +6,12 @@ create table if not exists public.moa_workspaces (
   workspace_name text not null default '내 워크스페이스',
   admin_email text not null default '',
   currency text not null default 'KRW' check (currency in ('KRW','THB','USD')),
+  workspace_goal_krw numeric not null default 30000000,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table public.moa_workspaces add column if not exists workspace_goal_krw numeric not null default 30000000;
 
 create table if not exists public.moa_team_members (
   id uuid primary key default gen_random_uuid(),
