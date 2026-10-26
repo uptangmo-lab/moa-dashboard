@@ -163,3 +163,17 @@ begin
 end $$;
 alter table public.moa_workspaces add constraint moa_workspaces_currency_check
   check (currency in ('KRW','THB','USD','USDT'));
+
+
+-- Personal encrypted memo vault. Only the authenticated owner can access their ciphertext.
+create table if not exists public.moa_private_memos (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  payload jsonb not null,
+  updated_at timestamptz not null default now()
+);
+alter table public.moa_private_memos enable row level security;
+revoke all on public.moa_private_memos from anon;
+grant select, insert, update, delete on public.moa_private_memos to authenticated;
+drop policy if exists "moa private memos owner only" on public.moa_private_memos;
+create policy "moa private memos owner only" on public.moa_private_memos for all to authenticated
+using (user_id=auth.uid()) with check (user_id=auth.uid());
